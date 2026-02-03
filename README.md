@@ -251,11 +251,11 @@ MIT License - feel free to use for personal and commercial projects.
 
 ## 👨‍💻 Author
 
-**[Your Name]**
+Muhammad Faozan Mujtaba
 
-- LinkedIn: [Your LinkedIn](https://linkedin.com/in/yourprofile)
-- GitHub: [Your GitHub](https://github.com/yourusername)
-- Email: your.email@example.com
+- LinkedIn: https://www.linkedin.com/in/fozan-mujtaba-6a85802a2/
+- GitHub: https://github.com/fozanmujtaba
+- Email: fozanmujtaba.480@gmail.com
 
 ---
 
