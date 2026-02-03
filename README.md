@@ -266,5 +266,3 @@ MIT License - feel free to use for personal and commercial projects.
 - Next.js team for the React framework
 
 ---
-
-*Built with ❤️ for learning and demonstration purposes*
