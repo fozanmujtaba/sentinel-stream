@@ -1,0 +1,306 @@
+services:
+  # ============================================
+  # ZOOKEEPER - Kafka Coordination Service
+  # ============================================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: sentinel-zookeeper
+    hostname: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "localhost", "2181" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sentinel-network
+
+  # ============================================
+  # KAFKA - Distributed Message Broker
+  # ============================================
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: sentinel-kafka
+    hostname: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_RETENTION_HOURS: 168
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: [ "CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092" ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - sentinel-network
+
+  # ============================================
+  # POSTGRESQL - Persistent Database
+  # ============================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: sentinel-postgres
+    hostname: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel_secure_2024
+      POSTGRES_DB: sentinel_stream
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U sentinel -d sentinel_stream" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sentinel-network
+
+  # ============================================
+  # REDIS - Caching & Real-time State
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: sentinel-redis
+    hostname: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sentinel-network
+
+  # ============================================
+  # KAFKA TOPIC INITIALIZATION
+  # ============================================
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: sentinel-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: [ "/bin/sh", "-c" ]
+    command: |
+      "
+      echo 'Waiting for Kafka to be ready...'
+      sleep 5
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic transactions --partitions 3 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic fraud_alerts --partitions 3 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic dead_letter_queue --partitions 1 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic case_events --partitions 3 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic notifications --partitions 2 --replication-factor 1
+
+      echo 'Topics created successfully!'
+      kafka-topics --bootstrap-server kafka:29092 --list
+      "
+    networks:
+      - sentinel-network
+
+  # ============================================
+  # FASTAPI CONSUMER SERVICE (Enhanced)
+  # ============================================
+  consumer:
+    build:
+      context: ./services/consumer
+      dockerfile: Dockerfile
+    container_name: sentinel-consumer
+    hostname: consumer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_GROUP_ID: sentinel-fraud-detection
+      DATABASE_URL: postgresql://sentinel:sentinel_secure_2024@postgres:5432/sentinel_stream
+      REDIS_URL: redis://redis:6379/0
+      MODEL_PATH: /app/models/fraud_model.joblib
+      VELOCITY_WINDOW_SECONDS: 60
+      VELOCITY_THRESHOLD: 5
+      LOG_LEVEL: INFO
+      SECRET_KEY: sentinel-super-secret-key-change-in-production
+    volumes:
+      - ./models:/app/models:ro
+      - consumer-logs:/app/logs
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - sentinel-network
+
+  # ============================================
+  # CASE MANAGEMENT SERVICE
+  # ============================================
+  case-service:
+    build:
+      context: ./services/case-service
+      dockerfile: Dockerfile
+    container_name: sentinel-case-service
+    hostname: case-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8001:8001"
+    environment:
+      DATABASE_URL: postgresql://sentinel:sentinel_secure_2024@postgres:5432/sentinel_stream
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      REDIS_URL: redis://redis:6379/1
+      SECRET_KEY: sentinel-super-secret-key-change-in-production
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8001/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - sentinel-network
+
+  # ============================================
+  # ANALYTICS SERVICE
+  # ============================================
+  analytics-service:
+    build:
+      context: ./services/analytics-service
+      dockerfile: Dockerfile
+    container_name: sentinel-analytics-service
+    hostname: analytics-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8002:8002"
+    environment:
+      DATABASE_URL: postgresql://sentinel:sentinel_secure_2024@postgres:5432/sentinel_stream
+      REDIS_URL: redis://redis:6379/2
+      SECRET_KEY: sentinel-super-secret-key-change-in-production
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8002/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - sentinel-network
+
+  # ============================================
+  # PYTHON PRODUCER SERVICE
+  # ============================================
+  producer:
+    build:
+      context: ./services/producer
+      dockerfile: Dockerfile
+    container_name: sentinel-producer
+    hostname: producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      consumer:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: transactions
+      TRANSACTIONS_PER_SECOND: 50
+      FRAUD_PROBABILITY: 0.05
+      LOG_LEVEL: INFO
+    restart: unless-stopped
+    networks:
+      - sentinel-network
+
+  # ============================================
+  # REACT DASHBOARD (Enhanced Multi-Page)
+  # ============================================
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: sentinel-dashboard
+    hostname: dashboard
+    depends_on:
+      - consumer
+      - case-service
+      - analytics-service
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_CONSUMER_URL: http://localhost:8000
+      NEXT_PUBLIC_CASE_SERVICE_URL: http://localhost:8001
+      NEXT_PUBLIC_ANALYTICS_URL: http://localhost:8002
+      NEXT_PUBLIC_WS_URL: ws://localhost:8000/ws
+    restart: unless-stopped
+    networks:
+      - sentinel-network
+
+# ============================================
+# VOLUMES
+# ============================================
+volumes:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+  postgres-data:
+  redis-data:
+  consumer-logs:
+
+    # ============================================
+    # NETWORKS
+    # ============================================
+networks:
+  sentinel-network:
+    driver: bridge
+    name: sentinel-network

@@ -1,0 +1,27 @@
+# FastAPI & Web Server
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+python-multipart==0.0.9
+
+# Kafka Client
+aiokafka==0.10.0
+confluent-kafka==2.3.0
+
+# ML & Data Processing
+scikit-learn==1.4.0
+pandas==2.2.0
+numpy==1.26.3
+joblib==1.3.2
+xgboost==2.0.3
+
+# Validation & Utilities
+pydantic==2.6.1
+pydantic-settings==2.1.0
+python-dateutil==2.8.2
+
+# Logging & Monitoring
+structlog==24.1.0
+python-json-logger==2.0.7
+
+# WebSocket support (included in uvicorn[standard])
+websockets==12.0

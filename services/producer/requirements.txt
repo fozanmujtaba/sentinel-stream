@@ -1,0 +1,8 @@
+# Kafka Producer
+confluent-kafka==2.3.0
+
+# Data Generation
+faker==22.5.1
+
+# Utilities
+python-dotenv==1.0.1
